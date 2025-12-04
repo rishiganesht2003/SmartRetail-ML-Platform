@@ -1,0 +1,13 @@
+Django
+djangorestframework
+mysqlclient
+django-cors-headers
+djangorestframework-simplejwt
+python-dotenv
+pandas
+numpy
+scikit-learn
+joblib
+celery
+redis
+openpyxl
