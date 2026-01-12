@@ -1,0 +1,4 @@
+This is a placeholder file named SmartRetail_Reports.pbix.
+Replace with a real Power BI Desktop .pbix file generated from Power BI Desktop.
+
+Purpose: allow testing of /api/ml/powerbi/report/ endpoint (download only).

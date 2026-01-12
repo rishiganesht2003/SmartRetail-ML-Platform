@@ -1,353 +1,315 @@
-# backend/reports/views.py
+from datetime import timedelta
+from decimal import Decimal
+
 from django.utils import timezone
-from django.db.models import Sum, Count, F
+from django.db.models import Sum, Count
 from django.db.models.functions import TruncMonth
-from rest_framework.views import APIView
-from rest_framework.response import Response
+
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.conf import settings
 
-from datetime import datetime, timedelta
-import calendar
-
-# Try imports from your existing apps; if missing, set to None and handle later.
+import requests
 try:
-    from sales.models import SalesRecord
+    import msal
 except Exception:
-    SalesRecord = None
+    msal = None
 
-try:
-    from orders.models import Order, OrderItem
-except Exception:
-    Order = None
-    OrderItem = None
+from .powerbi_service import create_push_dataset_and_report
+from .excel_service import generate_excel
 
-try:
-    from products.models import Product, Category
-except Exception:
-    Product = None
-    Category = None
-
-try:
-    from inventory.models import InventoryItem
-except Exception:
-    InventoryItem = None
-
-try:
-    from pricing.models import PriceAdjustment
-except Exception:
-    PriceAdjustment = None
-
-try:
-    from forecast.models import ForecastCache
-except Exception:
-    ForecastCache = None
-
-try:
-    from recommendation.models import RecommendationLog
-except Exception:
-    RecommendationLog = None
-
-try:
-    from automation.models import AutomationModule, AutomationStats
-except Exception:
-    AutomationModule = None
-    AutomationStats = None
-
-try:
-    from accounts.models import Profile
-except Exception:
-    Profile = None
-
-from django.contrib.auth import get_user_model
-User = get_user_model()
+from orders.models import Order, OrderItem
+from catalog.models import Product
+from accounts.models import Profile
+from accounts.views import ensure_profile
+from ml_engine.models import MLCache, AutomationConfig
+from reports.models import SupportTicket
 
 
-class ReportsOverviewView(APIView):
-    permission_classes = [IsAuthenticated]
+# ======================================================
+# HELPERS
+# ======================================================
+def is_staff_or_admin(user):
+    return ensure_profile(user).role in ("admin", "staff")
 
-    def get(self, request):
-        now = timezone.now()
-        # last 12 months (labels)
-        labels = []
-        months = []
-        for i in range(11, -1, -1):
-            dt = (now - timedelta(days=now.day - 1)).replace(day=1) - timedelta(days=30 * i)
-            # safer label using month numbers; final label set from end result
-        # Better approach: compute exact last 12 month names:
-        labels = []
-        for i in range(11, -1, -1):
-            y = (now.year if now.month - i > 0 else now.year - 1)
-            m = ((now.month - i - 1) % 12) + 1
-            labels.append(calendar.month_abbr[m])
 
-        # ---------------------------
-        # 1) Monthly Sales / Orders / AOV arrays
-        # ---------------------------
-        sales_values = [0] * 12
-        orders_values = [0] * 12
-        aov_values = [0] * 12
+SUCCESS_STATUS = ["paid", "shipped", "delivered"]
 
-        # Try SalesRecord first
-        if SalesRecord is not None:
-            try:
-                # assuming SalesRecord has "date" and "revenue" and "orders"
-                start = (now.replace(day=1) - timedelta(days=365))
-                qs = SalesRecord.objects.filter(date__gte=start)
-                qs = qs.annotate(month=TruncMonth("date")).values("month").annotate(
-                    revenue=Sum("revenue"), orders=Sum("orders")
-                ).order_by("month")
 
-                month_map = {calendar.month_abbr[d["month"].month]: d for d in qs}
-                for idx, label in enumerate(labels):
-                    d = month_map.get(label)
-                    if d:
-                        sales_values[idx] = float(d["revenue"] or 0)
-                        orders_values[idx] = int(d["orders"] or 0)
-                        aov_values[idx] = round(sales_values[idx] / max(1, orders_values[idx]), 2)
-            except Exception:
-                # fallback to orders below
-                pass
+# ======================================================
+# REPORTS OVERVIEW (ADMIN + STAFF)
+# ======================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def reports_overview(request):
+    if not is_staff_or_admin(request.user):
+        return Response({"detail": "Not authorized"}, status=403)
 
-        # Fallback: aggregate from orders/orderitems
-        if (sum(sales_values) == 0 or sum(orders_values) == 0) and Order is not None and OrderItem is not None:
-            try:
-                start_date = (now.replace(day=1) - timedelta(days=365)).date()
-                orders_qs = Order.objects.filter(created_at__date__gte=start_date)
-                orders_by_month = orders_qs.annotate(m=TruncMonth("created_at")).values("m").annotate(
-                    revenue=Sum("total_amount"), orders=Count("id")
-                ).order_by("m")
+    now = timezone.now()
+    start_6m = now - timedelta(days=180)
 
-                month_map = {calendar.month_abbr[d["m"].month]: d for d in orders_by_month}
-                for idx, label in enumerate(labels):
-                    d = month_map.get(label)
-                    if d:
-                        sales_values[idx] = float(d["revenue"] or 0)
-                        orders_values[idx] = int(d["orders"] or 0)
-                        aov_values[idx] = round(sales_values[idx] / max(1, orders_values[idx]), 2)
-            except Exception:
-                # If even this fails, leave zeros
-                pass
+    orders = Order.objects.filter(status__in=SUCCESS_STATUS)
 
-        # ---------------------------
-        # 2) Orders by Status
-        # ---------------------------
-        order_status = {"Delivered": 0, "Processing": 0, "Cancelled": 0, "Returned": 0}
-        if Order is not None:
-            try:
-                status_qs = Order.objects.values("status").annotate(count=Count("id"))
-                for s in status_qs:
-                    key = s["status"] or "Unknown"
-                    if key not in order_status:
-                        order_status[key] = s["count"]
-                    else:
-                        order_status[key] = s["count"]
-            except Exception:
-                pass
+    # -------------------------
+    # KPI SECTION
+    # -------------------------
+    total_revenue = orders.aggregate(v=Sum("total_inr"))["v"] or Decimal("0")
+    total_orders = orders.count()
+    customers = orders.values("customer").distinct().count()
+    aov = float(total_revenue / total_orders) if total_orders else 0
 
-        # ---------------------------
-        # 3) Customer Segments (rule-based)
-        #    - High Value: customers with total spend > X
-        #    - New: created in last 30 days
-        #    - At Risk: last order > 90 days ago OR no orders in last 90 days
-        #    - Regular: rest
-        # ---------------------------
-        segments = {"High Value": 0, "Regular": 0, "New": 0, "At Risk": 0}
-        try:
-            # build a map user_id -> total_spend and last_order
-            user_spend = {}
-            user_last_order = {}
-            if Order is not None:
-                ords = Order.objects.values("user_id").annotate(total=Sum("total_amount"), last=Sum("id"))  # last is placeholder
-                # safer: query per-user aggregate
-                from django.db.models import Max
-                ords = Order.objects.values("user_id").annotate(total=Sum("total_amount"), last_order=Max("created_at"))
-                for o in ords:
-                    uid = o.get("user_id")
-                    user_spend[uid] = float(o.get("total") or 0)
-                    user_last_order[uid] = o.get("last_order")
-            # now decide thresholds
-            now_dt = now
-            high_value_thresh = 50000  # rupees — adjust as needed
-            new_cutoff = now_dt - timedelta(days=30)
-            at_risk_cutoff = now_dt - timedelta(days=90)
+    # forecast from ML cache
+    forecast_cache = MLCache.objects.filter(
+        feature="sales_forecasting"
+    ).first()
 
-            users_qs = User.objects.all().values_list("id", flat=True)
-            for uid in users_qs:
-                total = user_spend.get(uid, 0)
-                last = user_last_order.get(uid)
-                if total >= high_value_thresh:
-                    segments["High Value"] += 1
-                elif last is None or (last and last <= at_risk_cutoff):
-                    segments["At Risk"] += 1
-                elif hasattr(User, "date_joined") and User.objects.filter(id=uid, date_joined__gte=new_cutoff).exists():
-                    segments["New"] += 1
-                else:
-                    segments["Regular"] += 1
-        except Exception:
-            # best-effort fallback: small zeros
-            pass
+    forecast_next_month = (
+        forecast_cache.payload.get("forecast_next_month", 0)
+        if forecast_cache else 0
+    )
 
-        # ---------------------------
-        # 4) Inventory Health
-        # ---------------------------
-        inventory = {"Healthy": 0, "Low Stock": 0, "Out of Stock": 0, "Overstocked": 0}
-        try:
-            if InventoryItem is not None:
-                items = InventoryItem.objects.all()
-                for i in items:
-                    stock = getattr(i, "stock", None) or 0
-                    min_stock = getattr(i, "min_stock", None) or 0
-                    max_stock = getattr(i, "max_stock", None) or (min_stock * 5 if min_stock else 100)
-                    if stock <= 0:
-                        inventory["Out of Stock"] += 1
-                    elif stock <= min_stock:
-                        inventory["Low Stock"] += 1
-                    elif stock >= max_stock:
-                        inventory["Overstocked"] += 1
-                    else:
-                        inventory["Healthy"] += 1
-        except Exception:
-            pass
+    # -------------------------
+    # MONTHLY SALES CHART
+    # -------------------------
+    monthly = (
+        orders
+        .filter(placed_at__gte=start_6m)
+        .annotate(month=TruncMonth("placed_at"))
+        .values("month")
+        .annotate(revenue=Sum("total_inr"), count=Count("id"))
+        .order_by("month")
+    )
 
-        # ---------------------------
-        # 5) Pricing impact (from PriceAdjustment)
-        # ---------------------------
-        pricing = {"labels": ["Baseline", "Promo", "AI-Price"], "lift": [0, 0, 0], "insights": []}
-        try:
-            if PriceAdjustment is not None:
-                recent = PriceAdjustment.objects.order_by("-created_at")[:50]
-                # estimate lifts: percent changes grouped by whether tag exists in adjustment (no tag through default)
-                up_count = 0
-                total_change = 0.0
-                for p in recent:
-                    try:
-                        total_change += float(p.percentage_change or 0)
-                        if float(p.percentage_change or 0) > 0:
-                            up_count += 1
-                    except Exception:
-                        pass
-                pricing["lift"] = [0, round(total_change / max(1, len(recent)), 2), round(total_change / max(1, len(recent)), 2)]
-                pricing["insights"].append(f"Avg price change (recent {len(recent)}): {round(total_change / max(1, len(recent)),2)}%")
-        except Exception:
-            pass
+    sales_labels = [m["month"].strftime("%b %Y") for m in monthly]
+    sales_revenue = [float(m["revenue"]) for m in monthly]
+    sales_orders = [m["count"] for m in monthly]
 
-        # ---------------------------
-        # 6) Seasonal Trends (prefers ForecastCache)
-        # ---------------------------
-        seasonal = {"labels": ["Q1", "Q2", "Q3", "Q4"], "index": [1.0, 1.0, 1.0, 1.0]}
-        try:
-            if ForecastCache is not None:
-                fc = ForecastCache.objects.order_by("-created_at").first()
-                if fc and getattr(fc, "seasonal_index", None):
-                    # assumes fc.seasonal_index is a mapping or list
-                    idx = getattr(fc, "seasonal_index")
-                    if isinstance(idx, dict):
-                        seasonal["index"] = [float(idx.get("Q1", 1.0)), float(idx.get("Q2", 1.0)), float(idx.get("Q3", 1.0)), float(idx.get("Q4", 1.0))]
-                    elif isinstance(idx, list) and len(idx) >= 4:
-                        seasonal["index"] = [float(x) for x in idx[:4]]
-        except Exception:
-            pass
+    # -------------------------
+    # ORDER STATUS PIE
+    # -------------------------
+    status_data = (
+        Order.objects
+        .values("status")
+        .annotate(count=Count("id"))
+    )
 
-        # ---------------------------
-        # 7) Top Products by Revenue
-        # ---------------------------
-        top_products = {"labels": [], "revenue": []}
-        try:
-            if OrderItem is not None and Product is not None:
-                # aggregate revenue per product via order items
-                items = OrderItem.objects.values("product_id").annotate(rev=Sum(F("price") * F("quantity"))).order_by("-rev")[:8]
-                product_map = {}
-                if Product is not None:
-                    product_qs = Product.objects.filter(id__in=[i["product_id"] for i in items]).values("id", "sku", "name")
-                    product_map = {p["id"]: (p.get("sku") or p.get("name") or str(p["id"])) for p in product_qs}
-                for it in items:
-                    pid = it["product_id"]
-                    top_products["labels"].append(product_map.get(pid, f"#{pid}"))
-                    top_products["revenue"].append(float(it["rev"] or 0))
-        except Exception:
-            pass
+    order_status = {
+        s["status"]: s["count"] for s in status_data
+    }
 
-        # ---------------------------
-        # 8) Users Growth
-        # ---------------------------
-        user_growth = {"labels": labels, "users": [0] * 12}
-        try:
-            if Profile is not None:
-                # prefer created_at in Profile, else User.date_joined
-                created_field = "created_at" if hasattr(Profile, "created_at") else None
-                # aggregate new users per month
-                from django.db.models.functions import TruncMonth
-                if created_field:
-                    qs = Profile.objects.annotate(m=TruncMonth(created_field)).values("m").annotate(count=Count("id"))
-                else:
-                    qs = User.objects.annotate(m=TruncMonth("date_joined")).values("m").annotate(count=Count("id"))
-                month_map = {calendar.month_abbr[d["m"].month]: d["count"] for d in qs if d.get("m")}
-                for idx, lbl in enumerate(labels):
-                    user_growth["users"][idx] = int(month_map.get(lbl, 0))
-        except Exception:
-            pass
+    # -------------------------
+    # CUSTOMER SEGMENTS
+    # -------------------------
+    segments_qs = (
+        Profile.objects
+        .exclude(customer_segment__isnull=True)
+        .values("customer_segment")
+        .annotate(count=Count("id"))
+    )
 
-        # ---------------------------
-        # 9) Recommendation CTR (from RecommendationLog if present)
-        # ---------------------------
-        reco_ctr = {"labels": [], "ctr": []}
-        try:
-            if RecommendationLog is not None:
-                # expecting fields: timestamp, impressions, clicks
-                from django.db.models import Sum
-                rs = RecommendationLog.objects.annotate(m=TruncMonth("timestamp")).values("m").annotate(impr=Sum("impressions"), clicks=Sum("clicks")).order_by("m")[:12]
-                for r in rs:
-                    if not r.get("m"):
-                        continue
-                    reco_ctr["labels"].append(calendar.month_abbr[r["m"].month])
-                    impr = r.get("impr") or 0
-                    clicks = r.get("clicks") or 0
-                    ctr = round((clicks / impr * 100) if impr else 0, 2)
-                    reco_ctr["ctr"].append(ctr)
-                if not reco_ctr["labels"]:
-                    # fallback simple stub
-                    reco_ctr = {"labels": labels[:6], "ctr": [0] * min(6, len(labels))}
-        except Exception:
-            reco_ctr = {"labels": labels[:6], "ctr": [0] * min(6, len(labels))}
+    segments = {
+        s["customer_segment"]: s["count"]
+        for s in segments_qs
+    }
 
-        # ---------------------------
-        # 10) Automation Runs
-        # ---------------------------
-        automation_runs = {"labels": labels[:6], "runs": [0] * min(6, 12)}
-        try:
-            if AutomationModule is not None and AutomationStats is not None:
-                stats = AutomationStats.objects.first()
-                if stats:
-                    # quick map: runs per recent months by using created_at if present on stats or modules
-                    automation_runs["runs"] = [int(stats.hours_saved // 10)] * len(automation_runs["labels"])
-        except Exception:
-            pass
+    # -------------------------
+    # INVENTORY HEALTH
+    # -------------------------
+    inventory = {
+        "total_products": Product.objects.count(),
+        "low_stock": Product.objects.filter(stock__lte=5).count(),
+        "out_of_stock": Product.objects.filter(stock__lte=0).count(),
+    }
 
-        # ---------------------------
-        # KPI cards (simple sums)
-        # ---------------------------
-        kpi_revenue = sum(sales_values)
-        kpi_forecast = sales_values[-1] if sales_values else 0
-        kpi_customers = User.objects.count() if User is not None else 0
-        kpi_aov = round((kpi_revenue / max(1, sum(orders_values))), 2) if sum(orders_values) else 0
+    # -------------------------
+    # PRICING IMPACT
+    # -------------------------
+    pricing_cache = MLCache.objects.filter(
+        feature="dynamic_pricing_overview"
+    ).first()
 
-        payload = {
-            "sales": {"labels": labels, "revenue": sales_values, "orders": orders_values, "aov": aov_values},
-            "order_status": order_status,
-            "segments": segments,
-            "inventory": inventory,
-            "pricing": pricing,
-            "seasonal": seasonal,
-            "top_products": top_products,
-            "user_growth": user_growth,
-            "reco_ctr": reco_ctr,
-            "automation_runs": automation_runs,
-            "kpis": {
-                "revenue": kpi_revenue,
-                "forecast_next_month": kpi_forecast,
-                "customers": kpi_customers,
-                "aov": kpi_aov,
-            },
+    pricing = pricing_cache.payload if pricing_cache else {}
+
+    # -------------------------
+    # SEASONAL TRENDS
+    # -------------------------
+    seasonal_cache = MLCache.objects.filter(
+        feature="seasonal_overview"
+    ).first()
+
+    seasonal = seasonal_cache.payload if seasonal_cache else {}
+
+    # -------------------------
+    # TOP PRODUCTS
+    # -------------------------
+    top_products_qs = (
+        OrderItem.objects
+        .values("product__name")
+        .annotate(revenue=Sum("line_total"))
+        .order_by("-revenue")[:5]
+    )
+
+    top_products = {
+        "labels": [p["product__name"] for p in top_products_qs],
+        "revenue": [float(p["revenue"]) for p in top_products_qs],
+    }
+
+    # -------------------------
+    # USER GROWTH (MONTHLY)
+    # -------------------------
+    users_monthly = (
+        Profile.objects
+        .annotate(month=TruncMonth("user__date_joined"))
+        .values("month")
+        .annotate(count=Count("id"))
+        .order_by("month")
+    )
+
+    user_growth = {
+        "labels": [
+            u["month"].strftime("%b %Y") for u in users_monthly if u["month"]
+        ],
+        "counts": [u["count"] for u in users_monthly],
+    }
+
+    # -------------------------
+    # RECOMMENDATION CTR (BASIC)
+    # -------------------------
+    reco_interactions = OrderItem.objects.count()
+    reco_ctr = {
+        "clicks": reco_interactions,
+        "ctr": round(reco_interactions / max(customers, 1), 2),
+    }
+
+    # -------------------------
+    # AUTOMATION USAGE
+    # -------------------------
+    cfg = AutomationConfig.get_solo()
+
+    automation_runs = {
+        "global_enabled": cfg.global_enabled,
+        "features": cfg.features,
+        "last_cached": cfg.last_cached,
+    }
+
+    # -------------------------
+    # FINAL PAYLOAD (ALL CHART READY)
+    # -------------------------
+    payload = {
+        "kpis": {
+            "revenue": float(total_revenue),
+            "orders": total_orders,
+            "customers": customers,
+            "aov": round(aov, 2),
+            "forecast_next_month": forecast_next_month,
+        },
+        "sales": {
+            "labels": sales_labels,
+            "revenue": sales_revenue,
+            "orders": sales_orders,
+        },
+        "order_status": order_status,
+        "segments": segments,
+        "inventory": inventory,
+        "pricing": pricing,
+        "seasonal": seasonal,
+        "top_products": top_products,
+        "user_growth": user_growth,
+        "reco_ctr": reco_ctr,
+        "automation_runs": automation_runs,
+    }
+
+    return Response(payload)
+
+
+# ======================================================
+# CUSTOMER SUPPORT
+# ======================================================
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_support_ticket(request):
+    profile = ensure_profile(request.user)
+    if profile.role != "customer":
+        return Response(status=403)
+
+    SupportTicket.objects.create(
+        customer=request.user,
+        name=request.data.get("name"),
+        email=request.data.get("email"),
+        message=request.data.get("message"),
+    )
+
+    return Response({"success": True})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def customer_my_tickets(request):
+    profile = ensure_profile(request.user)
+    if profile.role != "customer":
+        return Response(status=403)
+
+    tickets = SupportTicket.objects.filter(customer=request.user)
+
+    return Response([
+        {
+            "id": t.id,
+            "message": t.message,
+            "status": t.status,
+            "created_at": t.created_at,
         }
+        for t in tickets
+    ])
 
-        return Response(payload)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def powerbi_export(request):
+    """
+    Create/update a Power BI dataset and a report from the provided payload.
+
+    Requirements (set in Django settings):
+      POWERBI_TENANT_ID, POWERBI_CLIENT_ID, POWERBI_CLIENT_SECRET, POWERBI_GROUP_ID
+
+    This endpoint expects the frontend to POST the full reports payload (the same
+    shape returned by `reports_overview`). It will create a dataset in the
+    configured Power BI workspace and then create a report bound to that dataset.
+
+    Note: Full programmatic visual layout generation in Power BI is non-trivial
+    and may require PBIX import or Power BI Embedded flows. This implementation
+    focuses on creating a structured dataset and a report container and returns
+    a webUrl for the user to open the generated report in Power BI service.
+    """
+    # authorization + role check
+    profile = ensure_profile(request.user)
+    if profile.role not in ("admin", "staff"):
+        return Response({"detail": "Not authorized"}, status=403)
+
+    payload = request.data or {}
+    try:
+        dataset_id, report_url = create_push_dataset_and_report(payload, request.user.username)
+    except Exception as e:
+        return Response({"detail": "Power BI export failed", "error": str(e)}, status=500)
+
+    return Response({"ok": True, "dataset_id": dataset_id, "report_url": report_url})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def export_excel(request):
+    profile = ensure_profile(request.user)
+    if profile.role not in ("admin", "staff"):
+        return Response({"detail": "Not authorized"}, status=403)
+
+    payload = request.data or {}
+    try:
+        buf = generate_excel(payload)
+    except Exception as e:
+        return Response({"detail": "Excel generation failed", "error": str(e)}, status=500)
+
+    from django.http import HttpResponse
+
+    resp = HttpResponse(buf.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp["Content-Disposition"] = f'attachment; filename="smartretail_reports_{timezone.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+    return resp

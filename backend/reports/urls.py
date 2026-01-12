@@ -1,6 +1,12 @@
+# backend/reports/urls.py
+
 from django.urls import path
-from .views import ReportsOverviewView
+from reports import views
 
 urlpatterns = [
-    path("overview/", ReportsOverviewView.as_view(), name="reports-overview"),
+    path("overview/", views.reports_overview),
+    path("powerbi/export/", views.powerbi_export),
+    path("export_excel/", views.export_excel),
+    path("support/submit/", views.submit_support_ticket),
+    path("support/", views.customer_my_tickets),
 ]

@@ -11,3 +11,7 @@ joblib
 celery
 redis
 openpyxl
+requests
+msal
+matplotlib
+Pillow

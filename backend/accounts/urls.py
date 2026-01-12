@@ -1,21 +1,20 @@
-# backend/accounts/urls.py
 from django.urls import path
-from .views import (
-    RegisterView, RoleBasedTokenView, protected,
-    my_profile, change_password,
-    admin_users_list_create, admin_user_detail
-)
+import accounts.views as views
 
 urlpatterns = [
-    path("register/", RegisterView.as_view()),
-    path("login/", RoleBasedTokenView.as_view()),
-    path("protected/", protected),
+    # auth
+    path("register/", views.RegisterView.as_view()),
+    path("login/", views.RoleBasedTokenView.as_view()),
+    path("profile/", views.profile_view),
 
-    # profile & password
-    path("profile/", my_profile),              # GET, PATCH
-    path("change_password/", change_password), # POST
+    # 🔹 NEW – universal user info
+    path("me/", views.me),
 
-    # admin manage users
-    path("users/", admin_users_list_create),         # GET, POST
-    path("users/<int:pk>/", admin_user_detail),     # GET, PATCH, DELETE
+    # admin users
+    path("users/", views.admin_users),
+    path("users/<int:pk>/", views.admin_user_detail),
+
+    # wallet
+    path("wallet/", views.customer_wallet),
+    path("wallet/topup/", views.wallet_topup),
 ]

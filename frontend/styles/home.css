@@ -1,0 +1,446 @@
+/* =====================================================
+   HOMEPAGE — PREMIUM UI + DESIGN SYSTEM READY
+   - Scroll reveal helpers
+   - RTL ready
+   - Reusable design tokens for all roles
+===================================================== */
+
+/* ===============================
+   GLOBAL DESIGN TOKENS
+   (Reuse these in admin.css, customer.css)
+================================*/
+:root {
+  /* Core colors */
+  --color-bg-dark: #050214;
+  --color-bg-dark-accent: #0b2a55;
+  --color-bg-light: #eef6ff;
+  --color-bg-light-accent: #f6f1ff;
+
+  --color-text-dark: #e4ecff;
+  --color-text-light: #161616;
+
+  /* Role-based brand colors (shared for all pages) */
+  --role-customer-primary: #00d29e;
+  --role-customer-primary-soft: #00f0c0;
+
+  /* staff role removed; reuse admin token for the second slot to preserve visuals */
+  --role-secondary-primary: #a339ff;
+  --role-secondary-primary-soft: #d59bff;
+
+  --role-admin-primary: #a339ff;
+  --role-admin-primary-soft: #d59bff;
+
+  /* Shadows / radius / spacing system */
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-pill: 999px;
+
+  --shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow-strong: 0 22px 60px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 40px 90px rgba(80, 120, 255, 0.6);
+
+  --spacing-page-y: 64px;
+  --spacing-page-bottom: 90px;
+  --spacing-card-gap: 42px;
+
+  /* Button gradients derived from role tokens */
+  --btn1: linear-gradient(
+    135deg,
+    var(--role-customer-primary-soft),
+    var(--role-customer-primary)
+  );
+  --btn2: var(--btn3);
+  --btn3: linear-gradient(
+    135deg,
+    var(--role-admin-primary-soft),
+    var(--role-admin-primary)
+  );
+
+  /* Icon backgrounds using same system */
+  --icon1: linear-gradient(
+    135deg,
+    var(--role-customer-primary-soft),
+    var(--role-customer-primary)
+  );
+  --icon2: var(--icon3);
+  --icon3: linear-gradient(
+    135deg,
+    var(--role-admin-primary-soft),
+    var(--role-admin-primary)
+  );
+
+  /* Homepage-specific */
+  --home-bg-dark: radial-gradient(
+    circle at top,
+    var(--color-bg-dark-accent),
+    var(--color-bg-dark) 70%
+  );
+  --home-bg-light: linear-gradient(
+    135deg,
+    var(--color-bg-light),
+    var(--color-bg-light-accent)
+  );
+
+  --home-text-dark: var(--color-text-dark);
+  --home-text-light: var(--color-text-light);
+
+  --home-head-dark: #6ee8ff;
+  --home-head-light: #0b63ff;
+
+  --home-sub-dark: #c7b8ff;
+  --home-sub-light: #5327ff;
+
+  --home-card-dark: rgba(255, 255, 255, 0.08);
+  --home-card-light: rgba(255, 255, 255, 0.86);
+
+  --home-border-dark: rgba(255, 255, 255, 0.18);
+  --home-border-light: rgba(0, 0, 0, 0.12);
+}
+
+/* ===============================
+   PAGE BASE + STACK (click-safe)
+================================*/
+.home-body {
+  min-height: 100vh;
+  padding: var(--spacing-page-y) 20px var(--spacing-page-bottom);
+  text-align: center;
+  position: relative;
+  z-index: 0;
+  overflow-x: hidden;
+}
+
+/* Glow background behind content (no click blocking) */
+.home-body::before {
+  content: "";
+  position: absolute;
+  width: 480px;
+  height: 480px;
+  top: -150px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(
+    circle,
+    rgba(120, 100, 255, 0.22),
+    transparent 70%
+  );
+  filter: blur(110px);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ===============================
+   THEME APPLICATION
+================================*/
+[data-theme="dark"] .home-body {
+  background: var(--home-bg-dark);
+  color: var(--home-text-dark);
+}
+
+[data-theme="light"] .home-body {
+  background: var(--home-bg-light);
+  color: var(--home-text-light);
+}
+
+/* ===============================
+   RTL SUPPORT
+   (Just add dir="rtl" on <html> or root wrapper)
+================================*/
+[dir="rtl"] .home-body {
+  direction: rtl;
+  text-align: center; /* keep centered layout */
+}
+
+[dir="rtl"] .home-card-container {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .home-heading,
+[dir="rtl"] .home-subtitle {
+  text-align: center; /* still center but RTL-aware text rendering */
+}
+
+/* ===============================
+   THEME TOGGLE BUTTON
+================================*/
+.home-theme-toggle {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  z-index: 30;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.home-theme-toggle:hover {
+  transform: rotate(18deg) scale(1.08);
+  box-shadow: 0 0 24px rgba(120, 160, 255, 0.6);
+}
+
+.home-theme-toggle:focus-visible {
+  outline: 3px solid #7aaeff;
+  outline-offset: 4px;
+}
+
+/* RTL position for toggle (optional: mirror it) */
+[dir="rtl"] .home-theme-toggle {
+  right: auto;
+  left: 22px;
+}
+
+/* ===============================
+   LOGO
+================================*/
+.home-logo {
+  width: 80px;
+  margin: 30px auto 10px;
+  animation: floatLogo 5s ease-in-out infinite;
+  filter: drop-shadow(0 0 18px rgba(120, 200, 255, 0.9));
+}
+
+@keyframes floatLogo {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+/* ===============================
+   HEADINGS
+================================*/
+.home-heading {
+  font-size: clamp(2.5rem, 4.5vw, 3.3rem);
+  font-weight: 800;
+  margin-top: 20px;
+  background: linear-gradient(135deg, var(--home-head-dark), #bff4ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+[data-theme="light"] .home-heading {
+  background: linear-gradient(135deg, var(--home-head-light), #73a9ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.home-heading span {
+  background: linear-gradient(135deg, var(--home-sub-dark), #decfff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+[data-theme="light"] .home-heading span {
+  background: linear-gradient(135deg, var(--home-sub-light), #7c5cff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.home-subtitle {
+  max-width: 640px;
+  margin: 20px auto 60px;
+  font-size: 1.1rem;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+
+/* ===============================
+   CARD CONTAINER
+================================*/
+.home-card-container {
+  display: flex;
+  justify-content: center;
+  gap: var(--spacing-card-gap);
+  padding: 0 40px;
+  flex-wrap: wrap;
+}
+
+/* ===============================
+   CARD — ENTRANCE + HOVER
+================================*/
+.home-card {
+  width: 275px;
+  padding: 48px 30px 42px;
+  border-radius: var(--radius-lg);
+  background: var(--home-card-dark);
+  border: 1px solid var(--home-border-dark);
+  backdrop-filter: blur(20px);
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--shadow-strong);
+  animation: cardIn 0.8s ease both;
+  transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+
+[data-theme="light"] .home-card {
+  background: var(--home-card-light);
+  border: 1px solid var(--home-border-light);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.25);
+}
+
+.home-card:hover {
+  transform: translateY(-15px) scale(1.04);
+  box-shadow: var(--shadow-pop);
+}
+
+/* Staggered entrances (first load) */
+.home-card:nth-child(1) { animation-delay: 0.05s; }
+.home-card:nth-child(2) { animation-delay: 0.15s; }
+.home-card:nth-child(3) { animation-delay: 0.25s; }
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ===============================
+   ICON (aligned with role tokens)
+================================*/
+.home-icon {
+  width: 88px;
+  height: 88px;
+  border-radius: var(--radius-md);
+  margin: 0 auto 22px;
+  display: grid;
+  place-items: center;
+  font-size: 42px;
+  color: #fff;
+  box-shadow: 0 16px 35px rgba(0, 0, 0, 0.5);
+}
+
+.customer .home-icon { background: var(--icon1); }
+.staff    .home-icon { background: var(--icon2); }
+.admin    .home-icon { background: var(--icon3); }
+
+/* ===============================
+   BUTTON — RIPPLE + ACCESSIBLE
+================================*/
+.home-btn {
+  margin-top: 18px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 75%;
+  padding: 14px 0;
+  border-radius: var(--radius-pill);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  letter-spacing: 0.4px;
+  position: relative;
+  overflow: hidden;
+  z-index: 3;
+  cursor: pointer;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.home-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(255,255,255,0.6), transparent 60%);
+  transform: scale(0);
+  opacity: 0;
+  transition: transform 0.45s, opacity 0.45s;
+}
+
+.home-btn:active::after {
+  transform: scale(3);
+  opacity: 0;
+}
+
+.home-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+
+.home-btn:focus-visible {
+  outline: 3px solid rgba(255,255,255,0.9);
+  outline-offset: 5px;
+}
+
+.home-btn1 { background: var(--btn1); }
+.home-btn2 { background: var(--btn2); }
+.home-btn3 { background: var(--btn3); }
+
+/* ===============================
+   SCROLL-BASED REVEAL HELPERS
+   (Use IntersectionObserver to toggle .in-view)
+================================*/
+
+/* Base reveal class (hidden by default) */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px) scale(0.98);
+  transition:
+    opacity 0.6s ease-out,
+    transform 0.6s ease-out;
+  will-change: opacity, transform;
+}
+
+/* When JS adds .in-view → animate in */
+.reveal.in-view {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* Slight variants you can use:
+   .reveal-left, .reveal-right on any element
+*/
+.reveal-left {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+
+.reveal-right {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+.reveal-left.in-view,
+.reveal-right.in-view {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* Make cards also compatible with scroll reveal if needed */
+.home-card.reveal {
+  animation: none; /* disable initial load anim when using scroll reveal */
+}
+
+/* ===============================
+   MOBILE TAP OPTIMIZATION
+================================*/
+@media (max-width: 768px) {
+  .home-card {
+    width: 100%;
+    max-width: 340px;
+  }
+
+  .home-card-container {
+    padding: 0 20px;
+    gap: 32px;
+  }
+
+  .home-btn {
+    min-height: 48px; /* better tap size */
+  }
+}
+
+/* ===============================
+   REDUCED MOTION SUPPORT
+================================*/
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
